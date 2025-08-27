@@ -91,7 +91,7 @@ async function run() {
             const geminiData = await geminiResponse.json();
             
             if (!geminiData.candidates || geminiData.candidates.length === 0) {
-                console.error("Gemini API returned no candidates.");
+                console.error("Gemini API returned no candidates. Falling back to non-AI results.");
                 return res.json(top100Products.slice(0, 10)); // Fallback to top 10 non-AI results
             }
 
