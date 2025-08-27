@@ -25,7 +25,7 @@ async function run() {
     await client.connect();
     console.log("✅ Successfully connected to MongoDB Atlas!");
 
-    // Use the database and collection names you provided
+    // Using the database and collection names you provided
     const database = client.db("test"); 
     const productsCollection = database.collection("items");
 
@@ -51,10 +51,12 @@ async function run() {
             // 2. Fetch and create a relevance score using your field names
             const relevantProducts = await productsCollection.find(mongoQuery).toArray();
             
+            console.log(`Found ${relevantProducts.length} products matching the initial query.`); // Added for debugging
+
             const scoredProducts = relevantProducts.map(p => ({
                 ...p,
                 // CORRECTED: Use 'stars' and 'reviews' for scoring
-                score: (p.stars || 0) * Math.log10((p.reviews || 1)) 
+                score: (p.stars || 0) * Math.log10((p.reviews || 0) + 1) // Added +1 to avoid log(0)
             })).sort((a, b) => b.score - a.score);
 
             // 3. Take the top 100 most relevant products to send to the AI
@@ -81,10 +83,18 @@ async function run() {
             });
 
             if (!geminiResponse.ok) {
+                const errorBody = await geminiResponse.text();
+                console.error("Gemini API Error Body:", errorBody);
                 throw new Error(`Gemini API error! Status: ${geminiResponse.status}`);
             }
 
             const geminiData = await geminiResponse.json();
+            
+            if (!geminiData.candidates || geminiData.candidates.length === 0) {
+                console.error("Gemini API returned no candidates.");
+                return res.json(top100Products.slice(0, 10)); // Fallback to top 10 non-AI results
+            }
+
             const aiResponseText = geminiData.candidates[0].content.parts[0].text;
             
             const cleanedJsonString = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
