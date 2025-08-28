@@ -41,7 +41,7 @@ async function run() {
                 $search: {
                     // ❗️ IMPORTANT: If you gave your search index a custom name,
                     // replace "default" with that name.
-                    index: 'default', 
+                    index: 'search', 
                     compound: {
                         must: [{
                             text: {
