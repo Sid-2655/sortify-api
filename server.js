@@ -7,10 +7,8 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 5000;
 
-// --- Middleware ---
-// This is the crucial part for fixing the "Failed to fetch" error.
-// It tells the server to accept requests from other domains.
-app.use(cors()); 
+// Middleware
+app.use(cors());
 app.use(express.json());
 
 const uri = process.env.MONGO_URI;
@@ -29,7 +27,7 @@ async function run() {
     const database = client.db("test"); 
     const productsCollection = database.collection("items");
 
-    // --- Atlas Search Endpoint ---
+    // --- Atlas Search Endpoint with Relevance Sorting and Correct Price Filter ---
     app.get('/search', async (req, res) => {
         const { search, minPrice, maxPrice } = req.query;
 
@@ -41,20 +39,18 @@ async function run() {
             // 1. Define the Atlas Search stage for the aggregation pipeline
             const searchStage = {
                 $search: {
-                    index: 'default', 
-                    compound: {
-                        must: [{
-                            text: {
-                                query: search,
-                                path: 'title',
-                                fuzzy: { maxEdits: 1 }
-                            }
-                        }]
+                    index: 'default', // Use the name of your Atlas Search index
+                    text: {
+                        query: search,
+                        path: 'title', // The field to search in
+                        fuzzy: {
+                            maxEdits: 1 // Allows for one typo, making search more flexible
+                        }
                     }
                 }
             };
             
-            // 2. Define a separate stage for price filtering
+            // 2. Define a separate stage for price filtering AFTER the search
             const matchStage = { $match: {} };
             if (minPrice || maxPrice) {
                 matchStage.$match.price = {};
@@ -63,7 +59,9 @@ async function run() {
             }
 
             // 3. Define the limit stage
-            const limitStage = { $limit: 100 };
+            const limitStage = {
+                $limit: 100 // Return the top 100 most relevant results
+            };
 
             // 4. Construct the pipeline
             const pipeline = Object.keys(matchStage.$match).length > 0 
