@@ -27,7 +27,7 @@ async function run() {
     const database = client.db("test"); 
     const productsCollection = database.collection("items");
 
-    // --- Atlas Search Endpoint ---
+    // --- Direct Database Search Endpoint (Using basic regex) ---
     app.get('/search', async (req, res) => {
         const { search, minPrice, maxPrice } = req.query;
 
@@ -36,45 +36,23 @@ async function run() {
         }
 
         try {
-            // 1. Define the Atlas Search stage for the aggregation pipeline
-            const searchStage = {
-                $search: {
-                    index: 'default', 
-                    compound: {
-                        must: [{
-                            text: {
-                                query: search,
-                                path: 'title',
-                                fuzzy: { maxEdits: 1 }
-                            }
-                        }]
-                    }
-                }
+            // 1. Build the database query using your field names
+            const mongoQuery = {
+                title: { $regex: search, $options: 'i' } // Case-insensitive basic text search
             };
-            
-            // 2. Define a separate stage for price filtering
-            const matchStage = { $match: {} };
             if (minPrice || maxPrice) {
-                matchStage.$match.price = {};
-                if (minPrice) matchStage.$match.price.$gte = parseFloat(minPrice);
-                if (maxPrice) matchStage.$match.price.$lte = parseFloat(maxPrice);
+                mongoQuery.price = {};
+                if (minPrice) mongoQuery.price.$gte = parseFloat(minPrice);
+                if (maxPrice) mongoQuery.price.$lte = parseFloat(maxPrice);
             }
 
-            // 3. Define the limit stage
-            const limitStage = { $limit: 100 };
-
-            // 4. Construct the pipeline
-            const pipeline = Object.keys(matchStage.$match).length > 0 
-                ? [searchStage, matchStage, limitStage]
-                : [searchStage, limitStage];
-
-            // 5. Run the aggregation pipeline
-            const products = await productsCollection.aggregate(pipeline).toArray();
+            // 2. Fetch products from the database
+            const products = await productsCollection.find(mongoQuery).limit(100).toArray(); // Limit to 100 results
 
             res.json(products);
 
         } catch (err) {
-            console.error("❌ Failed during Atlas Search:", err);
+            console.error("❌ Failed during database search:", err);
             res.status(500).json({ message: "Error performing search" });
         }
     });
