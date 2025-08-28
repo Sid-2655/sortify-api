@@ -27,60 +27,93 @@ async function run() {
     const database = client.db("test"); 
     const productsCollection = database.collection("items");
 
-    // --- Atlas Search Endpoint (Updated for New Schema) ---
+    // --- Atlas Search Endpoint with Relevance Sorting and Correct Price Filter ---
     app.get('/search', async (req, res) => {
-        const { search, minPrice, maxPrice } = req.query;
+        const { search, minPrice, maxPrice, page = 1 } = req.query;
+        const limit = 50; // Number of items per page
+        const skip = (parseInt(page) - 1) * limit;
 
         if (!search) {
             return res.status(400).json({ message: "A search query is required." });
         }
 
         try {
-            // 1. Build the Atlas Search stage using the 'name' field
+            // 1. Define the Atlas Search stage for relevance
             const searchStage = {
                 $search: {
                     index: 'search', // Use the name of your Atlas Search index
-                    text: {
-                        query: search,
-                        path: 'name', // CORRECTED: Use 'name' field for searching
-                        fuzzy: { maxEdits: 1 }
+                    compound: {
+                        should: [
+                            {
+                                text: {
+                                    query: search,
+                                    path: 'name',
+                                    score: { 'boost': { 'value': 3 } } // Boost exact matches
+                                }
+                            },
+                            {
+                                text: {
+                                    query: search,
+                                    path: 'name',
+                                    fuzzy: { maxEdits: 1 }
+                                }
+                            }
+                        ]
                     }
                 }
             };
             
-            // 2. Build the full aggregation pipeline
-            const pipeline = [
-                searchStage,
-                {
-                    // Add a new field to convert string price to a number
-                    $addFields: {
-                        priceAsNumber: {
-                            $convert: {
-                                input: { $replaceAll: { input: "$discount_price", find: ",", replacement: "" } },
-                                to: "double",
-                                onError: 0.0, // Default to 0 if conversion fails
-                                onNull: 0.0
-                            }
+            // 2. Add a temporary field to convert string price to a number for filtering
+            const addFieldsStage = {
+                $addFields: {
+                    priceAsNumber: {
+                        $convert: {
+                            input: { 
+                                $replaceAll: { 
+                                    input: { $ifNull: ["$discount_price", "0"] }, 
+                                    find: ",", 
+                                    replacement: "" 
+                                } 
+                            },
+                            to: "double",
+                            onError: 0.0,
+                            onNull: 0.0
                         }
                     }
                 }
-            ];
+            };
 
-            // 3. Add the price filtering stage if prices are provided
+            // 3. Define the price filtering stage
+            const matchStage = { $match: {} };
             if (minPrice || maxPrice) {
-                const priceMatch = {};
-                if (minPrice) priceMatch.$gte = parseFloat(minPrice);
-                if (maxPrice) priceMatch.$lte = parseFloat(maxPrice);
-                pipeline.push({ $match: { priceAsNumber: priceMatch } });
+                matchStage.$match.priceAsNumber = {};
+                if (minPrice) matchStage.$match.priceAsNumber.$gte = parseFloat(minPrice);
+                if (maxPrice) matchStage.$match.priceAsNumber.$lte = parseFloat(maxPrice);
+            }
+            
+            // 4. Construct the main pipeline
+            const pipeline = [searchStage, addFieldsStage];
+            if (Object.keys(matchStage.$match).length > 0) {
+                pipeline.push(matchStage);
             }
 
-            // 4. Add the limit stage
-            pipeline.push({ $limit: 100 });
+            // 5. Create a second pipeline to get the total count of matching documents
+            const countPipeline = [...pipeline, { $count: 'total' }];
+            const countResult = await productsCollection.aggregate(countPipeline).toArray();
+            const totalProducts = countResult.length > 0 ? countResult[0].total : 0;
 
-            // 5. Run the aggregation pipeline
+            // 6. Add sorting, skipping, and limiting to the main pipeline for pagination
+            pipeline.push({ $skip: skip });
+            pipeline.push({ $limit: limit });
+
+            // 7. Run the main pipeline to get the products for the current page
             const products = await productsCollection.aggregate(pipeline).toArray();
 
-            res.json(products);
+            res.json({
+                products: products,
+                totalPages: Math.ceil(totalProducts / limit),
+                currentPage: parseInt(page)
+            });
 
         } catch (err) {
             console.error("❌ Failed during Atlas Search:", err);
