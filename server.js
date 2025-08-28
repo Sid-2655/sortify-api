@@ -27,7 +27,7 @@ async function run() {
     const database = client.db("test"); 
     const productsCollection = database.collection("items");
 
-    // --- Atlas Search Endpoint with Relevance Sorting and Correct Price Filter ---
+    // --- Direct Database Search Endpoint with Relevance Sorting ---
     app.get('/search', async (req, res) => {
         const { search, minPrice, maxPrice } = req.query;
 
@@ -36,45 +36,44 @@ async function run() {
         }
 
         try {
-            // 1. Define the Atlas Search stage for the aggregation pipeline
-            const searchStage = {
-                $search: {
-                    index: 'default', // Use the name of your Atlas Search index
-                    text: {
-                        query: search,
-                        path: 'title', // The field to search in
-                        fuzzy: {
-                            maxEdits: 1 // Allows for one typo, making search more flexible
-                        }
-                    }
+            // 1. Build the match stage for the aggregation pipeline
+            const matchStage = {
+                $match: {
+                    $text: { $search: search } // Use text search for relevance
                 }
             };
-            
-            // 2. Define a separate stage for price filtering AFTER the search
-            const matchStage = { $match: {} };
+
+            // Add price range to the match stage if provided
             if (minPrice || maxPrice) {
                 matchStage.$match.price = {};
                 if (minPrice) matchStage.$match.price.$gte = parseFloat(minPrice);
                 if (maxPrice) matchStage.$match.price.$lte = parseFloat(maxPrice);
             }
 
+            // 2. Define the sorting stage based on text search relevance score
+            const sortStage = {
+                $sort: {
+                    score: { $meta: "textScore" } // Sort by relevance
+                }
+            };
+            
             // 3. Define the limit stage
             const limitStage = {
                 $limit: 100 // Return the top 100 most relevant results
             };
 
-            // 4. Construct the pipeline
-            const pipeline = Object.keys(matchStage.$match).length > 0 
-                ? [searchStage, matchStage, limitStage]
-                : [searchStage, limitStage];
-
-            // 5. Run the aggregation pipeline
+            // 4. Run the aggregation pipeline
+            const pipeline = [matchStage, sortStage, limitStage];
             const products = await productsCollection.aggregate(pipeline).toArray();
 
             res.json(products);
 
         } catch (err) {
-            console.error("❌ Failed during Atlas Search:", err);
+            console.error("❌ Failed during database search:", err);
+            // Check for a common error when the text index is missing
+            if (err.message.includes('text index required')) {
+                return res.status(500).json({ message: "Database is not configured for text search. Please create a text index on the 'title' field in your MongoDB collection." });
+            }
             res.status(500).json({ message: "Error performing search" });
         }
     });
