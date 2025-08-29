@@ -27,54 +27,34 @@ async function run() {
     const database = client.db("test"); 
     const productsCollection = database.collection("items");
 
-    // --- Atlas Search Endpoint with Relevance Sorting and Correct Price Filter ---
+    // --- Atlas Search Endpoint (Updated for New Schema) ---
     app.get('/search', async (req, res) => {
-        const { search, minPrice, maxPrice, page = 1 } = req.query;
-        const limit = 50; // Number of items per page
-        const skip = (parseInt(page) - 1) * limit;
+        const { search, minPrice, maxPrice } = req.query;
 
         if (!search) {
             return res.status(400).json({ message: "A search query is required." });
         }
 
         try {
-            // 1. Define the Atlas Search stage for relevance
+            // 1. Define the Atlas Search stage using the 'name' field
             const searchStage = {
                 $search: {
                     index: 'search', // Use the name of your Atlas Search index
-                    compound: {
-                        should: [
-                            {
-                                text: {
-                                    query: search,
-                                    path: 'name',
-                                    score: { 'boost': { 'value': 3 } } // Boost exact matches
-                                }
-                            },
-                            {
-                                text: {
-                                    query: search,
-                                    path: 'name',
-                                    fuzzy: { maxEdits: 1 }
-                                }
-                            }
-                        ]
+                    text: {
+                        query: search,
+                        path: 'name', // CORRECTED: Use 'name' field for searching
+                        fuzzy: { maxEdits: 1 }
                     }
                 }
             };
             
-            // 2. Add a temporary field to convert string price to a number for filtering
+            // 2. Add a temporary field to convert string price to a number
             const addFieldsStage = {
                 $addFields: {
                     priceAsNumber: {
                         $convert: {
-                            input: { 
-                                $replaceAll: { 
-                                    input: { $ifNull: ["$discount_price", "0"] }, 
-                                    find: ",", 
-                                    replacement: "" 
-                                } 
-                            },
+                            // CORRECTED: This now removes both '₹' and ',' before converting
+                            input: { $replaceAll: { input: { $ifNull: ["$discount_price", "0"] }, find: ",", replacement: "" } },
                             to: "double",
                             onError: 0.0,
                             onNull: 0.0
@@ -97,23 +77,13 @@ async function run() {
                 pipeline.push(matchStage);
             }
 
-            // 5. Create a second pipeline to get the total count of matching documents
-            const countPipeline = [...pipeline, { $count: 'total' }];
-            const countResult = await productsCollection.aggregate(countPipeline).toArray();
-            const totalProducts = countResult.length > 0 ? countResult[0].total : 0;
+            // 5. Add the limit stage
+            pipeline.push({ $limit: 100 });
 
-            // 6. Add sorting, skipping, and limiting to the main pipeline for pagination
-            pipeline.push({ $skip: skip });
-            pipeline.push({ $limit: limit });
-
-            // 7. Run the main pipeline to get the products for the current page
+            // 6. Run the aggregation pipeline
             const products = await productsCollection.aggregate(pipeline).toArray();
 
-            res.json({
-                products: products,
-                totalPages: Math.ceil(totalProducts / limit),
-                currentPage: parseInt(page)
-            });
+            res.json(products);
 
         } catch (err) {
             console.error("❌ Failed during Atlas Search:", err);
