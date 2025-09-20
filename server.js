@@ -27,10 +27,10 @@ async function run() {
     const database = client.db("test"); 
     const productsCollection = database.collection("items");
 
-    // --- Atlas Search Endpoint with Improved Relevance ---
+    // --- Atlas Search Endpoint with Amazon-Like Relevance ---
     app.get('/search', async (req, res) => {
         const { search, minPrice, maxPrice, page = 1 } = req.query;
-        const limit = 50; // Number of items per page
+        const limit = 50;
         const skip = (parseInt(page) - 1) * limit;
 
         if (!search) {
@@ -38,78 +38,83 @@ async function run() {
         }
 
         try {
-            // 1. Define the Atlas Search stage for Amazon-like relevance
-            const searchStage = {
-                $search: {
-                    index: 'search',
-                    "compound": {
-                        "must": [{
-                            "text": {
-                                "query": search,
-                                "path": "name",
-                                "fuzzy": { "maxEdits": 1 }
-                            }
-                        }],
-                        "should": [
-                            {
-                                // Heavily boost items where the search term is an exact phrase
-                                "phrase": {
-                                    "query": search,
-                                    "path": "name",
-                                    "score": { "boost": { "value": 10 } }
-                                }
-                            },
-                            {
-                                // Also boost items where the search term matches the sub_category
-                                "text": {
-                                    "query": search,
-                                    "path": "sub_category",
-                                    "score": { "boost": { "value": 5 } }
-                                }
-                            }
-                        ]
+            // This is the main aggregation pipeline
+            const pipeline = [
+                {
+                    // STAGE 1: Perform the initial text search
+                    $search: {
+                        index: 'search',
+                        compound: {
+                            must: [{
+                                text: { query: search, path: "name", fuzzy: { maxEdits: 1 } }
+                            }],
+                            should: [
+                                { phrase: { query: search, path: "name", score: { boost: { value: 10 } } } },
+                                { text: { query: search, path: "sub_category", score: { boost: { value: 5 } } } }
+                            ]
+                        }
                     }
-                }
-            };
-            
-            // 2. Add a temporary field to convert string price to a number for filtering
-            const addFieldsStage = {
-                $addFields: {
-                    priceAsNumber: {
-                        $convert: {
-                            input: { $replaceAll: { input: { $replaceAll: { input: { $ifNull: ["$discount_price", "0"] }, find: ",", replacement: "" } }, find: "₹", replacement: "" } },
-                            to: "double",
-                            onError: 0.0,
-                            onNull: 0.0
+                },
+                {
+                    // STAGE 2: Add our custom popularity score
+                    $addFields: {
+                        textScore: { $meta: "searchScore" },
+                        // Popularity is a mix of rating and number of reviews (log scale)
+                        popularityScore: {
+                            $add: [
+                                { $ifNull: [{ $toDouble: "$ratings" }, 0] },
+                                { $log10: { $add: [{ $ifNull: [{ $toInt: "$no_of_ratings" }, 1] }, 1] } }
+                            ]
+                        }
+                    }
+                },
+                {
+                    // STAGE 3: Add the final combined score
+                    $addFields: {
+                        finalScore: {
+                            // Combine text relevance and popularity
+                            $multiply: ["$textScore", "$popularityScore"]
                         }
                     }
                 }
-            };
+            ];
 
-            // 3. Define the price filtering stage
-            const matchStage = { $match: {} };
+            // STAGE 4: Add price filtering if provided
             if (minPrice || maxPrice) {
-                matchStage.$match.priceAsNumber = {};
-                if (minPrice) matchStage.$match.priceAsNumber.$gte = parseFloat(minPrice);
-                if (maxPrice) matchStage.$match.priceAsNumber.$lte = parseFloat(maxPrice);
+                // First, convert the string price to a number
+                pipeline.push({
+                    $addFields: {
+                        priceAsNumber: {
+                            $convert: {
+                                input: { $replaceAll: { input: { $replaceAll: { input: { $ifNull: ["$discount_price", "0"] }, find: ",", replacement: "" } }, find: "₹", replacement: "" } },
+                                to: "double",
+                                onError: 0.0,
+                                onNull: 0.0
+                            }
+                        }
+                    }
+                });
+                
+                // Then, add the match stage for the price range
+                const priceMatch = {};
+                if (minPrice) priceMatch.$gte = parseFloat(minPrice);
+                if (maxPrice) priceMatch.$lte = parseFloat(maxPrice);
+                pipeline.push({ $match: { priceAsNumber: priceMatch } });
             }
             
-            // 4. Construct the main pipeline
-            const pipeline = [searchStage, addFieldsStage];
-            if (Object.keys(matchStage.$match).length > 0) {
-                pipeline.push(matchStage);
-            }
+            // STAGE 5: Sort by our final combined score
+            pipeline.push({ $sort: { finalScore: -1 } });
 
-            // 5. Create a second pipeline to get the total count of matching documents
+            // STAGE 6 (for count): Create a parallel pipeline to get the total
             const countPipeline = [...pipeline, { $count: 'total' }];
             const countResult = await productsCollection.aggregate(countPipeline).toArray();
             const totalProducts = countResult.length > 0 ? countResult[0].total : 0;
 
-            // 6. Add skipping and limiting to the main pipeline for pagination
+            // STAGE 7: Add pagination to the main pipeline
             pipeline.push({ $skip: skip });
             pipeline.push({ $limit: limit });
 
-            // 7. Run the main pipeline to get the products for the current page
+            // Run the main pipeline to get the products
             const products = await productsCollection.aggregate(pipeline).toArray();
 
             res.json({
