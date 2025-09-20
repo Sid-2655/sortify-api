@@ -38,33 +38,33 @@ async function run() {
         }
 
         try {
-            // 1. Define the Atlas Search stage for improved relevance
+            // 1. Define the Atlas Search stage for Amazon-like relevance
             const searchStage = {
                 $search: {
                     index: 'search',
-                    compound: {
-                        must: [{
-                            text: {
-                                query: search,
-                                path: 'name',
-                                fuzzy: { maxEdits: 1 }
+                    "compound": {
+                        "must": [{
+                            "text": {
+                                "query": search,
+                                "path": "name",
+                                "fuzzy": { "maxEdits": 1 }
                             }
                         }],
-                        should: [
+                        "should": [
                             {
-                                // Give a high score boost to exact phrase matches
-                                phrase: {
-                                    query: search,
-                                    path: 'name',
-                                    score: { boost: { value: 10 } }
+                                // Heavily boost items where the search term is an exact phrase
+                                "phrase": {
+                                    "query": search,
+                                    "path": "name",
+                                    "score": { "boost": { "value": 10 } }
                                 }
                             },
-                             {
-                                // Give a smaller boost to general text matches
-                                text: {
-                                    query: search,
-                                    path: 'name',
-                                    score: { boost: { value: 3 } }
+                            {
+                                // Also boost items where the search term matches the sub_category
+                                "text": {
+                                    "query": search,
+                                    "path": "sub_category",
+                                    "score": { "boost": { "value": 5 } }
                                 }
                             }
                         ]
@@ -135,4 +135,33 @@ async function run() {
 }
 
 run();
+```
+
+---
+### Step 2: Update Your MongoDB Search Index (Crucial!)
+
+For the new backend code to work, your Search Index needs to be aware of the `sub_category` field. This is a one-time change you need to make on the MongoDB Atlas website.
+
+1.  **Go to the "Search" Tab:** In your Atlas dashboard, navigate to your `items` collection and click on the **"Search"** tab.
+
+2.  **Edit the Index:** You will see your index named `search`. Click the **"Edit"** button.
+
+3.  **Update the JSON Definition:** The JSON editor will open. It currently only indexes the `name` field. You need to add the `sub_category` field to it.
+
+    Replace the current JSON with the following updated version:
+    ```json
+    {
+      "mappings": {
+        "dynamic": false,
+        "fields": {
+          "name": {
+            "type": "string"
+          },
+          "sub_category": {
+            "type": "string"
+          }
+        }
+      }
+    }
+    
 
