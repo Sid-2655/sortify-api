@@ -27,7 +27,7 @@ async function run() {
     const database = client.db("test"); 
     const productsCollection = database.collection("items");
 
-    // --- Atlas Search Endpoint with All Fixes ---
+    // --- Atlas Search Endpoint with Improved Relevance ---
     app.get('/search', async (req, res) => {
         const { search, minPrice, maxPrice, page = 1 } = req.query;
         const limit = 50; // Number of items per page
@@ -38,24 +38,33 @@ async function run() {
         }
 
         try {
-            // 1. Define the Atlas Search stage for relevance
+            // 1. Define the Atlas Search stage for improved relevance
             const searchStage = {
                 $search: {
-                    index: 'search', // Use the name of your Atlas Search index
+                    index: 'search',
                     compound: {
+                        must: [{
+                            text: {
+                                query: search,
+                                path: 'name',
+                                fuzzy: { maxEdits: 1 }
+                            }
+                        }],
                         should: [
                             {
-                                text: {
+                                // Give a high score boost to exact phrase matches
+                                phrase: {
                                     query: search,
                                     path: 'name',
-                                    score: { 'boost': { 'value': 3 } } // Boost exact matches
+                                    score: { boost: { value: 10 } }
                                 }
                             },
-                            {
+                             {
+                                // Give a smaller boost to general text matches
                                 text: {
                                     query: search,
                                     path: 'name',
-                                    fuzzy: { maxEdits: 1 }
+                                    score: { boost: { value: 3 } }
                                 }
                             }
                         ]
@@ -68,7 +77,6 @@ async function run() {
                 $addFields: {
                     priceAsNumber: {
                         $convert: {
-                            // CORRECTED: Remove currency symbols and commas before converting
                             input: { $replaceAll: { input: { $replaceAll: { input: { $ifNull: ["$discount_price", "0"] }, find: ",", replacement: "" } }, find: "₹", replacement: "" } },
                             to: "double",
                             onError: 0.0,
@@ -127,3 +135,4 @@ async function run() {
 }
 
 run();
+
