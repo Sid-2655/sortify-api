@@ -135,33 +135,4 @@ async function run() {
 }
 
 run();
-```
-
----
-### Step 2: Update Your MongoDB Search Index (Crucial!)
-
-For the new backend code to work, your Search Index needs to be aware of the `sub_category` field. This is a one-time change you need to make on the MongoDB Atlas website.
-
-1.  **Go to the "Search" Tab:** In your Atlas dashboard, navigate to your `items` collection and click on the **"Search"** tab.
-
-2.  **Edit the Index:** You will see your index named `search`. Click the **"Edit"** button.
-
-3.  **Update the JSON Definition:** The JSON editor will open. It currently only indexes the `name` field. You need to add the `sub_category` field to it.
-
-    Replace the current JSON with the following updated version:
-    ```json
-    {
-      "mappings": {
-        "dynamic": false,
-        "fields": {
-          "name": {
-            "type": "string"
-          },
-          "sub_category": {
-            "type": "string"
-          }
-        }
-      }
-    }
-    
 
