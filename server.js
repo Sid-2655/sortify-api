@@ -41,7 +41,7 @@ async function run() {
             // This is the main aggregation pipeline
             const pipeline = [
                 {
-                    // STAGE 1: Perform the initial text search with relevance scoring
+                    // STAGE 1: Perform the initial text search
                     $search: {
                         index: 'search',
                         compound: {
@@ -93,7 +93,7 @@ async function run() {
                 }
             ];
 
-            // STAGE 5: Add price filtering stage if the user provided a price range
+            // STAGE 5: Add price filtering if provided
             if (minPrice || maxPrice) {
                 // First, add a field to convert the price string (e.g., "₹32,990") to a number
                 pipeline.push({
@@ -122,7 +122,7 @@ async function run() {
             const countResult = await productsCollection.aggregate(countPipeline).toArray();
             const totalProducts = countResult.length > 0 ? countResult[0].total : 0;
 
-            // STAGE 8: Add pagination (skip and limit) to the main pipeline for continuous scrolling
+            // STAGE 8: Add pagination to the main pipeline for continuous scrolling
             pipeline.push({ $skip: skip });
             pipeline.push({ $limit: limit });
 
