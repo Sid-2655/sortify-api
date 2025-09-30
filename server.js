@@ -41,7 +41,7 @@ async function run() {
             // This is the main aggregation pipeline
             const pipeline = [
                 {
-                    // STAGE 1: Perform the initial text search
+                    // STAGE 1: Perform the initial text search with relevance scoring
                     $search: {
                         index: 'search',
                         compound: {
@@ -56,67 +56,80 @@ async function run() {
                     }
                 },
                 {
-                    // STAGE 2: Add our custom popularity score
+                    // STAGE 2: Safely convert ratings and reviews to numbers for scoring
                     $addFields: {
                         textScore: { $meta: "searchScore" },
-                        // Popularity is a mix of rating and number of reviews (log scale)
+                        ratingAsNumber: {
+                            $convert: {
+                                input: "$ratings", to: "double", onError: 0.0, onNull: 0.0
+                            }
+                        },
+                        reviewsAsNumber: {
+                             $convert: {
+                                input: { $replaceAll: { input: { $ifNull: ["$no_of_ratings", "0"] }, find: ",", replacement: "" } },
+                                to: "int", onError: 0, onNull: 0
+                            }
+                        }
+                    }
+                },
+                {
+                    // STAGE 3: Calculate a popularity score using the safe numbers
+                    $addFields: {
                         popularityScore: {
                             $add: [
-                                { $ifNull: [{ $toDouble: "$ratings" }, 0] },
-                                { $log10: { $add: [{ $ifNull: [{ $toInt: "$no_of_ratings" }, 1] }, 1] } }
+                                "$ratingAsNumber",
+                                { $log10: { $add: ["$reviewsAsNumber", 1] } } // Add 1 to avoid log(0)
                             ]
                         }
                     }
                 },
                 {
-                    // STAGE 3: Add the final combined score
+                    // STAGE 4: Add the final combined score for ranking
                     $addFields: {
                         finalScore: {
-                            // Combine text relevance and popularity
-                            $multiply: ["$textScore", "$popularityScore"]
+                            $multiply: ["$textScore", { $add: ["$popularityScore", 1] }] // Add 1 to popularity to ensure it's never zero
                         }
                     }
                 }
             ];
 
-            // STAGE 4: Add price filtering if provided
+            // STAGE 5: Add price filtering stage if the user provided a price range
             if (minPrice || maxPrice) {
-                // First, convert the string price to a number
+                // First, add a field to convert the price string (e.g., "₹32,990") to a number
                 pipeline.push({
                     $addFields: {
                         priceAsNumber: {
                             $convert: {
                                 input: { $replaceAll: { input: { $replaceAll: { input: { $ifNull: ["$discount_price", "0"] }, find: ",", replacement: "" } }, find: "₹", replacement: "" } },
-                                to: "double",
-                                onError: 0.0,
-                                onNull: 0.0
+                                to: "double", onError: 0.0, onNull: 0.0
                             }
                         }
                     }
                 });
                 
-                // Then, add the match stage for the price range
+                // Then, add the match stage to filter by the price range
                 const priceMatch = {};
                 if (minPrice) priceMatch.$gte = parseFloat(minPrice);
                 if (maxPrice) priceMatch.$lte = parseFloat(maxPrice);
                 pipeline.push({ $match: { priceAsNumber: priceMatch } });
             }
             
-            // STAGE 5: Sort by our final combined score
+            // STAGE 6: Sort all results by our final combined score
             pipeline.push({ $sort: { finalScore: -1 } });
 
-            // STAGE 6 (for count): Create a parallel pipeline to get the total
+            // STAGE 7: Create a parallel pipeline just to get the total count of results
             const countPipeline = [...pipeline, { $count: 'total' }];
             const countResult = await productsCollection.aggregate(countPipeline).toArray();
             const totalProducts = countResult.length > 0 ? countResult[0].total : 0;
 
-            // STAGE 7: Add pagination to the main pipeline
+            // STAGE 8: Add pagination (skip and limit) to the main pipeline for continuous scrolling
             pipeline.push({ $skip: skip });
             pipeline.push({ $limit: limit });
 
-            // Run the main pipeline to get the products
+            // Run the main pipeline to get the final list of products for the current page
             const products = await productsCollection.aggregate(pipeline).toArray();
 
+            // Send the response back to the frontend
             res.json({
                 products: products,
                 totalPages: Math.ceil(totalProducts / limit),
